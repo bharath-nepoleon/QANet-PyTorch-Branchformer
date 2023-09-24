@@ -1,4 +1,6 @@
-# QANet-PyTorch
+# QANet-PyTorch-Branchformer
+
+Use Branchformer(https://arxiv.org/abs/2207.02971) branching logic to merge self attention and convolution output. Main changes from original QANet in lines 257 - 299 in model/QANet.py
 
 ## Introduction
 
@@ -15,20 +17,15 @@ Run `python3 QANet_main.py --batch_size 32 --epochs 3 --with_cuda --use_ema --de
 
 With ema, 8 head attention, hidden size 128, QANet_andy.model,  30 epochs, batch_size 16:
 
-F1: **80.49**
-EM: **71.24**
-
-Performance on validation set during 30 epochs:
-
-<img src="https://github.com/BangLiu/QANet-PyTorch/blob/master/training.png" width="500" />
-
+F1: **68.95**
+EM: **56.43**
 
 ## Structure
 QANet_main.py: code for training QANet.
 
 trainer/QANet_trainer.py: trainer.
 
-model/QANet_model.py: defines QANet.
+model/QANet_model.py: defines Modified QANet with Branchformer logic.
 
 data_loader/SQuAD.py: SQuAD 1.1 and 2.0 data loader.
 
