@@ -254,6 +254,60 @@ class EncoderBlock(nn.Module):
         else:
             return inputs + residual
 
+class ModifiedEncoderBlock(nn.Module):
+    def __init__(self, conv_num, d_model, num_head, k, dropout=0.1):
+        super().__init__()
+        self.convs = nn.ModuleList([DepthwiseSeparableConv(d_model, d_model, k) for _ in range(conv_num)])
+        self.self_att = SelfAttention(d_model, num_head, dropout=dropout)
+        self.FFN_1 = Initialized_Conv1d(d_model, d_model, relu=True, bias=True)
+        self.FFN_2 = Initialized_Conv1d(d_model, d_model, bias=True)
+        self.norm_C = nn.ModuleList([nn.LayerNorm(d_model) for _ in range(conv_num)])
+        self.merge_proj = torch.nn.Linear(800, 400)
+        self.norm_1 = nn.LayerNorm(d_model)
+        self.norm_2 = nn.LayerNorm(d_model)
+        self.conv_num = conv_num
+        self.dropout = dropout
+        self.dropout_branch = torch.nn.Dropout(dropout)
+
+    def forward(self, x, mask, l, blks):
+        total_layers = (self.conv_num + 1) * blks
+        dropout = self.dropout
+        first_input = PosEncoder(x)
+        out_conv = first_input
+        for i, conv in enumerate(self.convs):
+            res = out_conv
+            out_conv = self.norm_C[i](out_conv.transpose(1,2)).transpose(1,2)
+            if (i) % 2 == 0:
+                out_conv = F.dropout(out_conv, p=dropout, training=self.training)
+            out_conv = conv(out_conv)
+            out_conv = self.layer_dropout(out_conv, res, dropout*float(l)/total_layers)
+            l += 1
+        res = first_input
+        out_att = self.norm_1(first_input.transpose(1,2)).transpose(1,2)
+        out_att = F.dropout(out_att, p=dropout, training=self.training)
+        out_att = self.self_att(out_att, mask)
+        out_att = self.layer_dropout(out_att, res, dropout*float(l)/total_layers)
+        l += 1
+        out = first_input + self.dropout_branch(self.merge_proj(torch.cat([out_att, out_conv], dim=-1)))
+        res = out
+
+        out = self.norm_2(out.transpose(1,2)).transpose(1,2)
+        out = F.dropout(out, p=dropout, training=self.training)
+        out = self.FFN_1(out)
+        out = self.FFN_2(out)
+        out = self.layer_dropout(out, res, dropout*float(l)/total_layers)
+        return out
+
+    def layer_dropout(self, inputs, residual, dropout):
+        if self.training == True:
+            pred = torch.empty(1).uniform_(0,1) < dropout
+            if pred:
+                return residual
+            else:
+                return F.dropout(inputs, dropout, training=self.training) + residual
+        else:
+            return inputs + residual
+
 
 class CQAttention(nn.Module):
     def __init__(self, d_model, dropout=0.1):
@@ -334,7 +388,9 @@ class QANet(nn.Module):
         self.emb_enc = EncoderBlock(conv_num=4, d_model=d_model, num_head=num_head, k=7, dropout=0.1)
         self.cq_att = CQAttention(d_model=d_model)
         self.cq_resizer = Initialized_Conv1d(d_model * 4, d_model)
-        self.model_enc_blks = nn.ModuleList([EncoderBlock(conv_num=2, d_model=d_model, num_head=num_head, k=5, dropout=0.1) for _ in range(7)])
+        self.model_enc_blks_1 = nn.ModuleList([ModifiedEncoderBlock(conv_num=2, d_model=d_model, num_head=num_head, k=5, dropout=0.1) for _ in range(7)])
+        self.model_enc_blks_2 = nn.ModuleList([ModifiedEncoderBlock(conv_num=2, d_model=d_model, num_head=num_head, k=5, dropout=0.1) for _ in range(7)])
+        self.model_enc_blks_3 = nn.ModuleList([ModifiedEncoderBlock(conv_num=2, d_model=d_model, num_head=num_head, k=5, dropout=0.1) for _ in range(7)])
         self.out = Pointer(d_model)
         self.PAD = pad
         self.Lc = c_max_len
@@ -354,14 +410,14 @@ class QANet(nn.Module):
         X = self.cq_att(Ce, Qe, maskC, maskQ)
         M0 = self.cq_resizer(X)
         M0 = F.dropout(M0, p=self.dropout, training=self.training)
-        for i, blk in enumerate(self.model_enc_blks):
+        for i, blk in enumerate(self.model_enc_blks_1):
              M0 = blk(M0, maskC, i*(2+2)+1, 7)
         M1 = M0
-        for i, blk in enumerate(self.model_enc_blks):
+        for i, blk in enumerate(self.model_enc_blks_2):
              M0 = blk(M0, maskC, i*(2+2)+1, 7)
         M2 = M0
         M0 = F.dropout(M0, p=self.dropout, training=self.training)
-        for i, blk in enumerate(self.model_enc_blks):
+        for i, blk in enumerate(self.model_enc_blks_3):
              M0 = blk(M0, maskC, i*(2+2)+1, 7)
         M3 = M0
         p1, p2 = self.out(M1, M2, M3, maskC)
